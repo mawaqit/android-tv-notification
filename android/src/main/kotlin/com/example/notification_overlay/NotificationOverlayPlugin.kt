@@ -1,8 +1,11 @@
 package com.example.notification_overlay
 
 import android.app.Activity
+import android.app.UiModeManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -14,6 +17,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
+import android.util.Log
 
 class NotificationOverlayPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, PluginRegistry.ActivityResultListener {
     private lateinit var channel : MethodChannel
@@ -43,14 +47,10 @@ class NotificationOverlayPlugin: FlutterPlugin, MethodCallHandler, ActivityAware
                     requestOverlayPermission()
                 }
             }
-   "showNotification" -> {
-                if (checkOverlayPermission()) {
-                    val message = call.argument<String>("message") ?: ""
-                    notificationOverlay.show(message)
-                    result.success(true)
-                } else {
-                    result.error("PERMISSION_DENIED", "Overlay permission not granted", null)
-                }
+            "showNotification" -> {
+                val message = call.argument<String>("message") ?: ""
+                notificationOverlay.show(message)
+                result.success(true)
             }
             "hideNotification" -> {
                 notificationOverlay.hide()
@@ -65,19 +65,90 @@ class NotificationOverlayPlugin: FlutterPlugin, MethodCallHandler, ActivityAware
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
     }
+    private fun isAndroidTV(): Boolean {
+        val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as UiModeManager
+        return uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
+    }
 
-    private fun checkOverlayPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(context)
-        } else {
-            true
+    private fun hasOverlayPermissionInPackageInfo(): Boolean {
+        return try {
+            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong())
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
+            }
+            
+            packageInfo.requestedPermissions?.contains(android.Manifest.permission.SYSTEM_ALERT_WINDOW) == true
+        } catch (e: Exception) {
+            Log.e("OverlayPermission", "Error checking package info", e)
+            false
         }
+    }
+    private fun checkOverlayPermission(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            // For Android TV, check if the permission is declared in manifest
+            if (isAndroidTV()) {
+                // First check if permission is in manifest
+                if (hasOverlayPermissionInPackageInfo()) {
+                    // Try to read the stored permission state
+                    val prefs = context.getSharedPreferences("overlay_prefs", Context.MODE_PRIVATE)
+                    return prefs.getBoolean("overlay_granted", false)
+                }
+                return false
+            }
+            // For regular Android devices, use the standard check
+            return Settings.canDrawOverlays(context)
+        }
+        return true
     }
 
     private fun requestOverlayPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
-            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
-            activity?.startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!checkOverlayPermission()) {
+                try {
+                    activity?.let { activity ->
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                        activity.startActivityForResult(intent, OVERLAY_PERMISSION_REQ_CODE)
+                    } ?: run {
+                        val intent = Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                        
+                        if (isAndroidTV()) {
+                            android.os.Handler().postDelayed({
+                                context.getSharedPreferences("overlay_prefs", Context.MODE_PRIVATE)
+                                    .edit()
+                                    .putBoolean("overlay_granted", true)
+                                    .apply()
+                                pendingResult?.success(true)
+                                pendingResult = null
+                            }, 1000)
+                        } else {
+                            android.os.Handler().postDelayed({
+                                pendingResult?.success(Settings.canDrawOverlays(context))
+                                pendingResult = null
+                            }, 1000)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("OverlayPermission", "Failed to request overlay permission", e)
+                    pendingResult?.error("PERMISSION_REQUEST_FAILED", e.message, null)
+                    pendingResult = null
+                }
+            } else {
+                pendingResult?.success(true)
+                pendingResult = null
+            }
         }
     }
 
@@ -101,10 +172,16 @@ class NotificationOverlayPlugin: FlutterPlugin, MethodCallHandler, ActivityAware
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
         if (requestCode == OVERLAY_PERMISSION_REQ_CODE) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(context)) {
+            if (isAndroidTV()) {
+                // For Android TV, store the permission state
+                context.getSharedPreferences("overlay_prefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("overlay_granted", true)
+                    .apply()
                 pendingResult?.success(true)
             } else {
-                pendingResult?.success(false)
+                // For regular Android devices, check the actual permission
+                pendingResult?.success(Settings.canDrawOverlays(context))
             }
             pendingResult = null
             return true
