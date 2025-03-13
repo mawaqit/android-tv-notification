@@ -20,6 +20,7 @@ import io.flutter.plugin.common.PluginRegistry
 import android.util.Log
 
 class NotificationOverlayPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, PluginRegistry.ActivityResultListener {
+    private val TAG = "NotificationOverlayPlugin"
     private lateinit var channel : MethodChannel
     private lateinit var context: Context
     private lateinit var notificationOverlay: NotificationOverlay
@@ -35,36 +36,47 @@ class NotificationOverlayPlugin: FlutterPlugin, MethodCallHandler, ActivityAware
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
-        when (call.method) {
-            "checkOverlayPermission" -> {
-                result.success(checkOverlayPermission())
-            }
-            "requestOverlayPermission" -> {
-                if (checkOverlayPermission()) {
+        try {
+            when (call.method) {
+                "checkOverlayPermission" -> {
+                    result.success(checkOverlayPermission())
+                }
+                "requestOverlayPermission" -> {
+                    if (checkOverlayPermission()) {
+                        result.success(true)
+                    } else {
+                        pendingResult = result
+                        requestOverlayPermission()
+                    }
+                }
+                "showNotification" -> {
+                    val message = call.argument<String>("message") ?: ""
+                    notificationOverlay.show(message)
                     result.success(true)
-                } else {
-                    pendingResult = result
-                    requestOverlayPermission()
+                }
+                "hideNotification" -> {
+                    notificationOverlay.hide()
+                    result.success(true)
+                }
+                else -> {
+                    result.notImplemented()
                 }
             }
-            "showNotification" -> {
-                val message = call.argument<String>("message") ?: ""
-                notificationOverlay.show(message)
-                result.success(true)
-            }
-            "hideNotification" -> {
-                notificationOverlay.hide()
-                result.success(null)
-            }
-            else -> {
-                result.notImplemented()
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in method call: ${call.method}", e)
+            result.error("ERROR", e.message, e.stackTraceToString())
         }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        try {
+            notificationOverlay.dispose()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disposing notification overlay", e)
+        }
         channel.setMethodCallHandler(null)
     }
+    
     private fun isAndroidTV(): Boolean {
         val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as UiModeManager
         return uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
@@ -84,10 +96,11 @@ class NotificationOverlayPlugin: FlutterPlugin, MethodCallHandler, ActivityAware
             
             packageInfo.requestedPermissions?.contains(android.Manifest.permission.SYSTEM_ALERT_WINDOW) == true
         } catch (e: Exception) {
-            Log.e("OverlayPermission", "Error checking package info", e)
+            Log.e(TAG, "Error checking package info", e)
             false
         }
     }
+    
     private fun checkOverlayPermission(): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             // For Android TV, check if the permission is declared in manifest
@@ -141,7 +154,7 @@ class NotificationOverlayPlugin: FlutterPlugin, MethodCallHandler, ActivityAware
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e("OverlayPermission", "Failed to request overlay permission", e)
+                    Log.e(TAG, "Failed to request overlay permission", e)
                     pendingResult?.error("PERMISSION_REQUEST_FAILED", e.message, null)
                     pendingResult = null
                 }

@@ -15,16 +15,29 @@ import android.os.Handler
 import android.os.Looper
 import androidx.cardview.widget.CardView
 import android.util.TypedValue
+import android.util.Log
 
 class NotificationOverlay(private val context: Context) {
-
+    private val TAG = "NotificationOverlay"
     private val windowManager: WindowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private lateinit var layout: View
     private lateinit var textView: TextView
     private lateinit var imageView: ImageView
     private val handler = Handler(Looper.getMainLooper())
+    private var isViewAttached = false
 
     fun show(message: String) {
+        // First try to hide any existing view to avoid duplicates
+        try {
+            if (::layout.isInitialized && isViewAttached) {
+                windowManager.removeView(layout)
+                isViewAttached = false
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Error removing existing view: ${e.message}")
+            isViewAttached = false
+        }
+        
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -45,8 +58,14 @@ class NotificationOverlay(private val context: Context) {
         layout = createNotificationLayout()
         textView.text = message
 
-        windowManager.addView(layout, params)
-
+        try {
+            windowManager.addView(layout, params)
+            isViewAttached = true
+            Log.d(TAG, "Notification view added successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error adding notification view: ${e.message}", e)
+            isViewAttached = false
+        }
     }
 
     private fun createNotificationLayout(): View {
@@ -95,9 +114,25 @@ class NotificationOverlay(private val context: Context) {
     }
 
     fun hide() {
-        if (::layout.isInitialized) {
+        if (::layout.isInitialized && isViewAttached) {
             handler.removeCallbacksAndMessages(null)
-            windowManager.removeView(layout)
+            try {
+                windowManager.removeView(layout)
+                isViewAttached = false
+                Log.d(TAG, "Notification view removed successfully")
+            } catch (e: IllegalArgumentException) {
+                // View is already detached, just log and update state
+                Log.d(TAG, "View already detached: ${e.message}")
+                isViewAttached = false
+            } catch (e: Exception) {
+                Log.e(TAG, "Error removing view: ${e.message}", e)
+                isViewAttached = false
+            }
         }
+    }
+    
+    // Call this method when your plugin is being detached
+    fun dispose() {
+        hide()
     }
 }
